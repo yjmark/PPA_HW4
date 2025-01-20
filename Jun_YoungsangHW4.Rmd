@@ -1,0 +1,799 @@
+---
+title: "HW4 - Targeting A Housing Subsidy"
+author: "Jun, Youngsang"
+date: "November 1, 2024"
+output: 
+  html_document: 
+    theme: readable
+    code_folding: hide
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+::: {style="text-align: center;"}
+Master of Urban Spatial Analytics (MUSA)\
+Stuart Weitzman School of Design\
+**University of Pennsylvania**
+:::
+
+::: {style="text-indent: -30px; margin-left: 30px;"}
+**To**: Tax Credit Program Manager\
+Department of Housing and Community Development (HCD)\
+Emil City
+:::
+
+::: {style="text-indent: -50px; margin-left: 50px;"}
+**From**: Jun, Youngsang\
+Student of Master of Urban Spatial Analytics (MUSA)\
+Stuart Weitzman School of Design\
+University of Pennsylvania
+:::
+
+::: {style="text-indent: -20px; margin-left: 20px;"}
+**Date of Memo**: November 1, 2024
+:::
+
+::: {style="text-indent: -20px; margin-left: 20px;"}
+**SUBJECT**: Targeting a Housing Subsidy
+:::
+
+**1. Background**
+
+::: {style="text-indent: 40px; margin-left: 0px;"}
+Emil City has conducted marketing campaigns targeting homeowners who qualify for a home repair tax credit program.
+However, due to a low conversion rate and random outreach to eligible homeowners, a more proactive approach is required.
+To improve the efficiency of the program, research was conducted to convert all the client-level data from previous campaigns into an improved model that can better target their limited outreach resources.
+This memo presents the results of the trained classifier and a cost-benefit analysis by using the results of the classification.
+:::
+
+```{r setup, include=FALSE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(kableExtra)
+library(caret)
+library(knitr) 
+library(pscl)
+library(plotROC)
+library(pROC)
+library(lubridate)
+library(ggcorrplot)
+
+palette5 <- c("#981FAC","#CB0F8B","#FF006A","#FE4C35","#FE9900")
+palette4 <- c("#981FAC","#FF006A","#FE4C35","#FE9900")
+palette2 <- c("#981FAC","#FF006A")
+options(digits = 3, scipen = 999)
+
+# functions and data directory
+root.dir = "https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/DATA/"
+
+housingSubsidy <- read.csv(file.path(root.dir,"/Chapter6/housingSubsidy.csv"))
+```
+
+**2. Data Interpretation and Visualization**
+
+::: {style="text-indent: 40px; margin-left: 0px;"}
+The given dataset contains the results of a survey with nine continuous variables (`age`, `campaign`, `pdays`, `previous`, `unemploy_rate`, `cons.price.idx`, `cons.conf.idx`, `inflation_rate`, `spent_on_repairs`), ten categorical variables (`job`, `marital`, `education`, `taxLien`, `mortgage`, `taxbill_in_phl`, `contact`, `month`, `day_of_week`, `poutcome`), and the indicate that represents whether the individual enter the home repair tax credit program.
+In this analysis, a logistic regression was conducted with entering status as the dependent variable and the 19 variables listed above as independent variables.
+:::
+
+a.  Continuous Variables
+
+::: {style="text-indent: 40px; margin-left: 20px;"}
+To determine whether entering status varies with continuous variables, mean values were compared across entering statuses.
+The results show significant differences between the entered and not-entered groups for `age`, `campaign`, `inflation_rate`, `cons.conf.idx`, `previous`, `unemploy_rate`, and `pdays`, as shown in the figure.
+:::
+
+::: {style="text-indent: 40px; margin-left: 20px;"}
+The following plots the mean for nine continuous features grouped by enter or non-enter.
+The likelihood of entering the home repair tax credit program, on average, increases with: Older age (`age`), Fewer contacts for this individual for this campaign (`campaign`), Lower U.S. inflation rate (`inflation_rate`), Lower consumer confidence index at time of campaign (`cons.conf.idx`), More contacts before this campaign for this individual (`previous`), Lower unemployment rate at time of campaign (`unemploy_rate`), and Fewer days since last contact from a previous program (`pdays`, in case that client previously contacted).
+:::
+
+```{r exploratory_continuous3, message = FALSE, warning = FALSE}
+housingSubsidy %>%
+  dplyr::select(y,age, campaign, previous, unemploy_rate, cons.price.idx, cons.conf.idx, inflation_rate, spent_on_repairs) %>%
+  gather(Variable, value, -y) %>%
+    ggplot(aes(factor(y, levels = c("no", "yes")), value, fill = y)) + 
+      geom_bar(position = "dodge", stat = "summary", fun = "mean") + 
+      facet_wrap(~Variable, scales = "free", ncol=4) +
+      scale_fill_manual(values = palette2) +
+      labs(x="Entered", y="Value", 
+           title = "Feature associations with the likelihood of entering the home repair tax credit program",
+           subtitle = "(continous features)") +
+      theme(legend.position = "bottom")
+```
+
+```{r exploratory_continuous_pdays, message = FALSE, warning = FALSE}
+housingSubsidy %>%
+  dplyr::select(y,pdays) %>%
+  subset(pdays < 999) %>%
+  gather(Variable, value, -y) %>%
+    ggplot(aes(factor(y, levels = c("no", "yes")), value, fill = y)) +
+      geom_bar(position = "dodge", stat = "summary", fun = "mean") + 
+      facet_wrap(~Variable, scales = "free", ncol=4) +
+      scale_fill_manual(values = palette2) +
+      labs(x="Entered", y="Value", 
+           title = "Feature associations with the likelihood of entering the home repair tax credit program",
+           subtitle = "(continous features)") +
+      theme(legend.position = "bottom")
+```
+
+::: {style="text-indent: 40px; margin-left: 20px;"}
+The following plots the distributions of nine continuous features grouped by entered or not-entered.
+For the age, entered was dominant under age 50, while not-entered was dominant over 60.
+For the unemployment rate, entered was dominant at values above -0.5, while not-entered was dominant at values below -0.5.
+For previous, entered was dominant at values below 1, whereas not-entered was dominant at values above 2.
+For the inflation rate, not-entered was dominant at values below 4.2, while entered was dominant at values above 4.2.
+:::
+
+```{r exploratory_continuous_density, message = FALSE, warning = FALSE}
+housingSubsidy %>%
+    dplyr::select(y,age, campaign, previous, unemploy_rate, cons.price.idx, cons.conf.idx, inflation_rate, spent_on_repairs) %>%
+    gather(Variable, value, -y) %>%
+    ggplot() + 
+    geom_density(aes(value, color=y), fill = "transparent") + 
+    facet_wrap(~Variable, scales = "free", ncol=4) +
+    scale_fill_manual(values = palette2) +
+    labs(title = "Feature distributions entered vs. not entered",
+         subtitle = "(continous outcomes)")+
+    theme(legend.position = "bottom")
+```
+
+```{r exploratory_continuous_pday, message = FALSE, warning = FALSE}
+housingSubsidy %>%
+    dplyr::select(y,pdays)%>%
+  subset(pdays < 999) %>%
+    gather(Variable, value, -y) %>%
+    ggplot() + 
+    geom_density(aes(value, color=y), fill = "transparent") + 
+    facet_wrap(~Variable, scales = "free") +
+    scale_fill_manual(values = palette2) +
+    labs(title = "Feature distributions entered vs. not entered",
+         subtitle = "(continous outcomes)")+
+    theme(legend.position = "bottom")
+```
+
+b.  Categorical Variables 
+
+::: {style="text-indent: 40px; margin-left: 20px;"} 
+The plots below illustrate whether differences in ten categorical features associate with the likelihood that homeowners entered the credit program. We can see that `entered` was more often than `not-entered` when `poutcome` is `success` and in December and March, but further insights are limited until the regression analysis is conducted. 
+:::
+
+```{r exploratory_categorical4, message = FALSE, warning = FALSE}
+housingSubsidy %>%
+    dplyr::select(y, job, marital, education) %>%
+    gather(Variable, value, -y) %>%
+    count(Variable, value, y) %>%
+      ggplot(., aes(value, n, fill = y)) +   
+        geom_bar(position = "dodge", stat="identity") +
+        facet_wrap(~Variable, scales="free", ncol=3) +
+        scale_fill_manual(values = palette2) +
+        labs(x="Entered", y="Value",
+             title = "Feature associations with the likelihood of entering the home repair tax credit program",
+             subtitle = "Categorical features") +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1),
+              legend.position = "bottom")
+```
+
+```{r exploratory_categorical2, message = FALSE, warning = FALSE}
+housingSubsidy %>%
+    dplyr::select(y, taxLien, mortgage, taxbill_in_phl) %>%
+    gather(Variable, value, -y) %>%
+    count(Variable, value, y) %>%
+      ggplot(., aes(value, n, fill = y)) +   
+        geom_bar(position = "dodge", stat="identity") +
+        facet_wrap(~Variable, scales="free", ncol=3) +
+        scale_fill_manual(values = palette2) +
+        labs(x="Entered", y="Value",
+             title = "Feature associations with the likelihood of entering the home repair tax credit program",
+             subtitle = "Categorical features") +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1),
+              legend.position = "bottom")
+```
+
+```{r exploratory_categorical, message = FALSE, warning = FALSE}
+housingSubsidy %>%
+    dplyr::select(y, contact, month, day_of_week, poutcome) %>%
+    gather(Variable, value, -y) %>%
+    count(Variable, value, y) %>%
+      ggplot(., aes(value, n, fill = y)) +   
+        geom_bar(position = "dodge", stat="identity") +
+        facet_wrap(~Variable, scales="free", ncol=4) +
+        scale_fill_manual(values = palette2) +
+        labs(x="Entered", y="Value",
+             title = "Feature associations with the likelihood of entering the home repair tax credit program",
+             subtitle = "Categorical features") +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1),
+              legend.position = "bottom")
+```
+
+**3. The Original Regression Model Interpretation**
+
+a.  A Logistic Regression Model Creations 
+
+::: {style="text-indent: 40px; margin-left: 20px;"} 
+A logistic regression model predicts a binary outcome - a `1` or a `0` - an `Entered` or a `Not-entered` and associates a coefficient that describes the change in the probability of the outcome given some change in the independent variable. The data is partitioned into a 65/35 training and test set (`p = 0.65`). These sets are named `housingSubsidyTrain` and `housingSubsidyTest`. 
+:::
+
+```{r create_partition, message = FALSE, warning = FALSE}
+set.seed(3456)
+trainIndex <- createDataPartition(housingSubsidy$y, p = .65, 
+                                  list = FALSE,
+                                  times = 1)
+housingSubsidyTrain <- housingSubsidy[ trainIndex,]
+housingSubsidyTest  <- housingSubsidy[-trainIndex,]
+
+```
+
+::: {style="text-indent: 40px; margin-left: 20px;"}
+Then the model of kitchen sink regression (original regression), which includes the whole of independent variables, is created.
+However, `X`, which represents the order, is excluded as well as `taxLien`, which has only one `yes` value that makes training and test set interpretation impossible.
+The results of regression that includes the whole independent variables show that `contacttelephone`, `monthdec`, `monthmar`, `campaign`, and `poutcomenonexistent` are statistically significant.
+The AIC of this training model is 1589.
+:::
+
+```{r run_model_original, message = FALSE, warning = FALSE}
+
+housingSubsidyModel <- glm(y_numeric ~ .,
+                  data=housingSubsidyTrain %>% 
+                    dplyr::select(-X, -y, -taxLien),
+                  family="binomial" (link="logit"))
+
+summary(housingSubsidyModel)
+
+```
+
+b.  Pseudo-R² Values 
+
+::: {style="text-indent: 40px; margin-left: 20px;"} 
+The value of McFadden R-squared is 0.197. The closer to 1, generally the better. 
+:::
+
+```{r fit_metrics, message = FALSE, warning = FALSE}
+pseudo_r2 <- pR2(housingSubsidyModel)
+pseudo_r2_df <- as.data.frame(t(pseudo_r2))
+kable(pseudo_r2_df, "html", caption = "Pseudo-R² Values for `housingSubsidyModel`") %>%
+  kable_styling(bootstrap_options = c("hover", "striped"))
+```
+
+c.  Predictions 
+
+::: {style="text-indent: 40px; margin-left: 20px;"} 
+The following is the distribution of predicted probabilities by observed outcome and a Confusion Matrix. In the original prediction model, the sensitivity is 0.2420, and the specificity is 0.9805.
+:::
+
+```{r testProbs, message = FALSE, warning = FALSE}
+
+testProbs <- data.frame(Outcome = as.factor(housingSubsidyTest$y_numeric),
+                        Probs = predict(housingSubsidyModel, housingSubsidyTest, type= "response"))
+
+ggplot(testProbs, aes(x = Probs, fill = as.factor(Outcome))) + 
+  geom_density() +
+  facet_grid(Outcome ~ .) +
+  scale_fill_manual(values = palette2) +
+  labs(x = "Entered", y = "Density of probabilities",
+       title = "Distribution of predicted probabilities by observed outcome") +
+  theme(strip.text.x = element_text(size = 18),
+        legend.position = "none")
+```
+
+```{r thresholds, message = FALSE, warning = FALSE}
+testProbs <- 
+  testProbs %>%
+  mutate(predOutcome  = as.factor(ifelse(testProbs$Probs > 0.5 , 1, 0)))
+
+caret::confusionMatrix(testProbs$predOutcome, testProbs$Outcome, 
+                       positive = "1")
+```
+
+d.  Cross Validation 
+
+::: {style="text-indent: 40px; margin-left: 20px;"} 
+The cross validation (CV) goodness of fit metrics of the original prediction model is as follows. The value of Sensitivity is 0.196, and Specificity is 0.988, which is the results after changed the baseline y value from `no` to `yes`. The Area Under the Curve (AUC) of the original model is 0.772, which represents the area under the Receiver Operating Characteristic Curve (ROC) curve.
+:::
+
+```{r cv, message = FALSE, warning = FALSE}
+housingSubsidy$y <- fct_relevel(housingSubsidy$y, "yes")
+
+ctrl <- trainControl(method = "cv", number = 100, classProbs=TRUE, summaryFunction=twoClassSummary)
+
+cvFit <- train(relevel(y, ref = "yes") ~ .,
+                  data=housingSubsidy %>% 
+                    dplyr::select(-X, -job, -age, -marital, -taxLien, -education, -month, -day_of_week, -pdays, -previous, -inflation_rate, -y_numeric), 
+                method="glm", family="binomial",
+                metric="ROC", trControl = ctrl)
+
+cvFit
+```
+
+```{r goodness_metrics2, message = FALSE, warning = FALSE}
+dplyr::select(cvFit$resample, -Resample) %>%
+  gather(metric, value) %>%
+  left_join(gather(cvFit$results[2:4], metric, mean)) %>%
+  ggplot(aes(value)) + 
+    geom_histogram(bins=35, fill = "#FF006A") +
+    facet_wrap(~metric) +
+    geom_vline(aes(xintercept = mean), colour = "#981FAC", linetype = 3, size = 1.5) +
+    scale_x_continuous(limits = c(0, 1)) +
+    labs(x="Goodness of Fit", y="Count", title="CV Goodness of Fit Metrics",
+         subtitle = "Across-fold mean reprented as dotted lines")
+
+```
+
+**4. Improved Regression Model Suggestion**
+
+a.  Variable Transformations to Engineer New Features that Significantly Increase the Sensitivity
+
+::: {style="text-indent: 40px; margin-left: 20px;"}
+To improve the model's performance, the following transformations were applied to the variables by feature importance/correlation.
+:::
+
+(1) From categorical to continuous:
+
+-   `education`: a new variable `educationEnterAvg` was created to represent the average likelihood of entering the credit program by education level.
+
+-   `job`: a new variable `jobEnterAvg` was created to represent the average likelihood of entering the credit program by job.
+
+(2) From continuous to categorical:
+
+-   `age`: categorized into three groups: `50 and below`, `50-60`, and `others`.
+
+-   `pdays`: categorized into two groups: `Client not previously contacted` and `Contacted`.
+
+-   `inflation_rate`: categorized into two groups: `Inflation below 4.2%` and `Inflation above 4.2%`.
+
+-   `previous`: categorized into two groups: `Previous call was 1 or 0` and `Previous call was 2 and above`.
+
+(3) From categorical to categorical:
+
+-   `marital`: categorized into two groups: `Married` and `Others`.
+
+-   `month`: categorized into two groups: `March and December` and `Others`.
+
+-   `day_of_week`: categorized into two groups: `Monday or Friday` and `Tuesday, Wednesday, or Thursday`.
+
+```{r job_variables, cache = TRUE, message = FALSE, warning = FALSE}
+housingSubsidy2 <- 
+  housingSubsidy %>% 
+  group_by(job) %>% 
+  summarize(totEnter = sum(y_numeric), 
+            n = n(), 
+            jobEnterAvg = 100*(totEnter/n)) %>%
+  dplyr::select(-n, -totEnter) %>%
+  right_join(housingSubsidy, .) %>%
+  mutate(age_cat = case_when(age <= 50  ~ "50 and below",
+                              age <= 60 & age >50 ~ "50-60",
+                             TRUE  ~ "others")) %>%
+  mutate(pdays_cat = case_when(pdays == 999 ~ "client not previously contacted",
+                               TRUE ~ "contacted")) %>%
+  mutate(inflation_cat = case_when(inflation_rate <= 4.2  ~ "inflation below 4.2",
+                                   inflation_rate >4.2 ~ "inflation above 4.2")) %>%
+  mutate(previous_cat = case_when(previous <= 1  ~ "previous call 1 or 0",
+                                  previous > 1  ~ "previous call 2 and above")) %>%
+  mutate(month_con = case_when(month == "mar" ~ "March or December",
+                               month == "apr" ~ "4-11",
+                               month == "may" ~ "4-11",
+                               month == "jun" ~ "4-11",
+                               month == "jul" ~ "4-11",
+                               month == "aug" ~ "4-11",
+                               month == "sep" ~ "4-11",
+                               month == "oct" ~ "4-11",
+                               month == "nov" ~ "4-11",
+                               month == "dec" ~ "March or December")) %>%
+  mutate(day_con = case_when(day_of_week == "mon" ~ "Monfri",
+                             day_of_week == "tue" ~ "TWR",
+                             day_of_week == "wed" ~ "TWR",
+                             day_of_week == "thu" ~ "TWR",
+                             day_of_week == "fri" ~ "Monfri")) %>%
+  mutate(marital_cat = case_when(marital == "married"  ~ "married",
+                                TRUE ~ "others")) 
+
+housingSubsidy2 <- 
+  housingSubsidy2 %>% 
+ group_by(education) %>% 
+  summarize(totEnter = sum(y_numeric), 
+            n = n(), 
+            educationEnterAvg = 100*(totEnter/n)) %>%
+    dplyr::select(-n, -totEnter) %>%
+  right_join(housingSubsidy2, .)
+```
+
+::: {style="text-indent: 40px; margin-left: 20px;"}
+The data is partitioned into a 65/35 training and test set (`p = 0.65`). These sets are named `housingSubsidy2Train` and `housingSubsidy2Test`. 
+:::
+
+```{r create_partition_improved, message = FALSE, warning = FALSE}
+set.seed(3456)
+trainIndex2 <- createDataPartition(housingSubsidy2$y, p = .65, 
+                                  list = FALSE,
+                                  times = 1)
+housingSubsidy2Train <- housingSubsidy2[ trainIndex2,]
+housingSubsidy2Test  <- housingSubsidy2[-trainIndex2,]
+```
+
+::: {style="text-indent: 40px; margin-left: 20px;"}
+The improved model with the whole variables is run with the dependent variable `y_numeric` and without `X` and `taxLien` for the same reason above.
+The results of the modeling show that `contacttelephone`, `campaign`, `poutcome`, `unemploy_rate`, `cons.price.idx`, `cons.conf.idx`, `inflation_cat`, `previous_cat`, and `month_con` are statistically significant.
+The AIC of this training model is 1547, which is a bit improved than the original `housingSubsidyModel`.
+:::
+
+```{r run_model_improved, message = FALSE, warning = FALSE}
+housingSubsidyModel2 <- glm(y_numeric ~ .,
+                  data=housingSubsidy2Train %>% 
+                    dplyr::select(-X, -job, -age, -marital, -taxLien, -education, -month, -day_of_week, -pdays, -previous, -inflation_rate, -y),
+                  family="binomial" (link="logit"))
+
+summary(housingSubsidyModel2)
+```
+
+::: {style="text-indent: 40px; margin-left: 20px;"}
+Additionally, the correlation across numeric variables is examined to see if there exists duplicated information.
+It shows that `unemploy_rate` has a strong correlation with `inflation_rate`, `cons.price.idx`, and `spent_on_repairs`, while `pdays` has a strong correlation with `previous`.
+We also eliminated the independent variables that were statistically insignificant.
+Nonetheless, if the AIC decreases or increases Sensitivity when specific variables are added, those variables are retained in the model.
+:::
+
+```{r}
+numericVars <- 
+  select_if(housingSubsidy2, is.numeric) %>% na.omit()
+
+ggcorrplot(
+  round(cor(numericVars), 1), 
+  p.mat = cor_pmat(numericVars),
+  colors = c("#25CB10", "white", "#FA7800"),
+  type="lower",
+  insig = "blank") +  
+    labs(title = "Correlation across numeric variables") 
+```
+
+::: {style="text-indent: 40px; margin-left: 20px;"}
+The final improved model result is as follows. The AIC is 1546, which is more improved than the original model.
+:::
+
+```{r run_model_improved2, message = FALSE, warning = FALSE}
+housingSubsidyModel2 <- glm(y_numeric ~ .,
+                  data=housingSubsidy2Train %>% 
+                    dplyr::select(-X, -y,   -age,-age_cat,-job, -jobEnterAvg, -marital,-marital_cat,  -education, -taxLien, -month, -cons.conf.idx, -poutcome,  -day_of_week, -pdays, -previous,-spent_on_repairs,      -inflation_rate, -previous_cat ),
+                  #   -mortgage, -contact, -campaign, -unemploy_rate,         -cons.price.idx,   -inflation_cat  -month_con, -educationEnterAvg  -pdays_cat,-taxbill_in_phl,-day_con, 
+ #                 weights = ifelse(housingSubsidy2Train$y_numeric == 1, 10, 1),
+                  family="binomial" (link="logit"))
+
+summary(housingSubsidyModel2)
+
+
+```
+
+b.  Pseudo-R² Values
+
+::: {style="text-indent: 40px; margin-left: 20px;"}
+The value of new model's McFadden R-squared is 0.180, which is lower than the original. 
+:::
+
+```{r fit_metrics2, message = FALSE, warning = FALSE}
+pseudo_r2 <- pR2(housingSubsidyModel)
+pseudo_r22 <- pR2(housingSubsidyModel2)
+pseudo_r2_df <- as.data.frame(t(pseudo_r2))
+pseudo_r22_df <- as.data.frame(t(pseudo_r22))
+pseudo_r2_df <- cbind(Model = "Original Model", pseudo_r2_df)
+pseudo_r22_df <- cbind(Model = "Improved Model", pseudo_r22_df)
+rbind(pseudo_r2_df, pseudo_r22_df) %>%
+  kable( "html", caption = "Pseudo-R² Values for `housingSubsidyModel`") %>%
+  kable_styling(bootstrap_options = c("hover", "striped"))
+```
+
+c.  Predictions
+
+::: {style="text-indent: 40px; margin-left: 20px;"}
+A dataframe of predictions for the 1,440 observations in the test set is created, called `testProbs2`. The following is the distribution of predicted probabilities by observed outcome and a Confusion Matrix. In the improved prediction model, the sensitivity is 0.2548, and the specificity is 0.9875. In the distribution, the height of "not entered" hump get lower.
+:::
+
+```{r plot_testProbs2, message = FALSE, warning = FALSE}
+testProbs2 <- data.frame(Outcome = as.factor(housingSubsidy2Test$y_numeric),
+                        Probs = predict(housingSubsidyModel2, housingSubsidy2Test, type= "response"))
+
+ggplot(testProbs2, aes(x = Probs, fill = as.factor(Outcome))) + 
+  geom_density() +
+  facet_grid(Outcome ~ .) +
+  scale_fill_manual(values = palette2) +
+  labs(x = "Entered", y = "Density of probabilities",
+       title = "Distribution of predicted probabilities by observed outcome") +
+  theme(strip.text.x = element_text(size = 18),
+        legend.position = "none")
+```
+
+```{r thresholds2, message = FALSE, warning = FALSE}
+testProbs2 <- 
+  testProbs2 %>%
+  mutate(predOutcome  = as.factor(ifelse(testProbs2$Probs > 0.5 , 1, 0)))
+
+caret::confusionMatrix(testProbs2$predOutcome, testProbs2$Outcome, 
+                       positive = "1")
+```
+
+d. ROC Curve (comparing with the original model)
+
+::: {style="text-indent: 40px; margin-left: 20px;"}
+The ROC curve is a graphical representation of the trade-off between the true positive rate and false positive rate across a series of thresholds. The area under the curve (AUC) is a single number that summarizes the performance of the model across all thresholds.
+Curves are "above" the y=x line, which is where the prediction rates for positives and negatives are better than random.
+The ROC of the improved model is more "square" than the original one. The AUC of the improved model is 0.826, which is greater than the original model's AUC of 0.802.
+:::
+
+```{r auc, message = FALSE, warning = FALSE}
+auc_testProbs <- auc(testProbs$Outcome, testProbs$Probs)
+auc_testProbs2 <- auc(testProbs2$Outcome, testProbs2$Probs)
+
+auc_df <- data.frame(
+  Model = c("Original Model", "Improved Model"),
+  AUC = c(auc_testProbs, auc_testProbs2)
+)
+
+kable(auc_df, "html", caption = "AUC Values by Models") %>%
+  kable_styling(bootstrap_options = c("hover", "striped"))
+```
+
+```{r roc_curve, warning = FALSE, message = FALSE}
+ggplot() +
+  geom_roc(data= testProbs, aes(d = as.numeric(Outcome), m = Probs, colour = "Original Model"), n.cuts = 50, labels = FALSE) +
+  geom_roc(data= testProbs2, aes(d = as.numeric(Outcome), m = Probs, colour = "Improved Model"), n.cuts = 50, labels = FALSE) +
+  style_roc(theme = theme_grey) +
+  geom_abline(slope = 1, intercept = 0, size = 1.5, color = 'grey') +
+  scale_colour_manual(values = c("Improved Model" = "#FE9900", "Original Model" = "#335566")) +
+  labs(title = "ROC Curve - enterModel", colour = "Models") +
+  theme(legend.position = "bottom")
+```
+
+d.  Cross validation
+
+::: {style="text-indent: 40px; margin-left: 20px;"}
+The CV goodness of fit metrics of the improved prediction model is as follows. The value of Sensitivity is 0.212, and Specificity is 0.987. The AUC of the improved model is 0.788.
+:::
+
+```{r cv2, message = FALSE, warning = FALSE}
+housingSubsidy2$y <- fct_relevel(housingSubsidy2$y, "yes")
+
+ctrl2 <- trainControl(method = "cv", number = 100, classProbs=TRUE, summaryFunction=twoClassSummary)
+
+cvFit2 <- train(relevel(y, ref = "yes") ~ .,
+                  data=housingSubsidy2 %>% 
+                    dplyr::select(-X, -y_numeric,   -age,-age_cat,-job, -jobEnterAvg, -marital,-marital_cat,  -education, -taxLien, -month, -cons.conf.idx, -poutcome,  -day_of_week, -pdays, -previous,-spent_on_repairs,      -inflation_rate, -previous_cat ), 
+                method="glm", family="binomial",
+                metric="ROC", trControl = ctrl2)
+
+cvFit2
+```
+
+```{r goodness_metrics, message = FALSE, warning = FALSE}
+dplyr::select(cvFit2$resample, -Resample) %>%
+  gather(metric, value) %>%
+  left_join(gather(cvFit2$results[2:4], metric, mean)) %>%
+  ggplot(aes(value)) + 
+    geom_histogram(bins=35, fill = "#FF006A") +
+    facet_wrap(~metric) +
+    geom_vline(aes(xintercept = mean), colour = "#981FAC", linetype = 3, size = 1.5) +
+    scale_x_continuous(limits = c(0, 1)) +
+    labs(x="Goodness of Fit", y="Count", title="CV Goodness of Fit Metrics",
+         subtitle = "Across-fold mean reprented as dotted lines")
+
+```
+
+**5. Cost-Benefit Calculation using Improved Regression Model**
+
+a. Cost/Benefit Equation for Each Confusion Metric
+
+::: {style="text-indent: 40px; margin-left: 20px;"}
+This chapter estimates the revenues associated with using the improved model under the following scenario. The cost-benefit table is as follows.
+:::
+
+```         
+(1) True Positive: Predicted correctly a homeowner would enter the credit program; allocated the marketing resources, and 25% ultimately achieved the credit. The marketing cost of $2,850 per person is included in the cost. Only 25% of eligible individuals are expected to receive the $5,000 credit, generating benefits only for this 25%, while the remaining 75% will not receive the credit. Therefore, both the $5,000 cost and the $66,000 benefit are multiplied by 25%.
+   - Cost: -$2,850 -$5,000*0.25*count
+   - Benefit: ($10,000+$56,000)*0.25*count
+(2) True Negative: Predicted correctly a homeowner would not enter the credit program. Since no marketing resources were allocated and no credit was allocated, cost would be $0. Benefit would also be $0 because no one in this group received credit, the benefit $10,000+$56,000 will not be generated.
+   - Cost: $0
+   - Benefit: $0
+(3) False Positive: Predicted incorrectly a homeowner would enter the credit program; allocated marketing resources; no credit allocated. The marketing cost of $2,850 per person is included in the cost, and credit cost would be $0 since no credit was allocated. Benefit would also be $0 because no one in this group received credit, the benefit $10,000+$56,000 will not be generated.
+   - Cost: -$2,850*count
+   - Benefit: $0
+(4) False Negative: We predicted that a homeowner would not enter the credit program but they did. These are likely homeowners who signed up for reasons unrelated to the marketing campaign. Thus, we ‘0 out’ this category, assuming the cost/benefit of this is $0. 
+   - Cost: $0
+   - Benefit: $0
+```
+
+```{r cost_benefit, message = FALSE, warning = FALSE}
+cost_benefit_table <-
+   testProbs2 %>%
+      count(predOutcome, Outcome) %>%
+      summarize(
+                True_Positive = sum(n[predOutcome==1 & Outcome==1]),True_Negative = sum(n[predOutcome==0 & Outcome==0]),False_Positive = sum(n[predOutcome==1 & Outcome==0]),
+                False_Negative = sum(n[predOutcome==0 & Outcome==1])
+                ) %>%
+       gather(Variable, Count) %>%
+       mutate(Revenue =
+               ifelse(Variable == "True_Negative", (Count * 0) ,
+               ifelse(Variable == "True_Positive",((-2850-5000*0.25+66000*0.25) * Count),
+               ifelse(Variable == "False_Positive", (-2850) * Count, 0)))) %>%
+    bind_cols(data.frame(Description = c(
+              "We correctly predicted enter",
+              "We correctly predicted no enter",
+              "We predicted enter and customer did not enter",
+              "We predicted no enter and customer entered")))
+
+kable(cost_benefit_table,
+       caption = "Cost/Benefit Table (threshold=0.50)") %>% kable_styling()
+```
+
+b. Plot the confusion metric outcomes for each Threshold to Optimize Thresholds
+
+The last step to tuning the model is to run it for each threshold value. In the previous step, the threshold was set to 0.5; however, this may not yield the maximum revenue. By calculating the total credit count and revenue at each threshold, the optimze threshold that maximizes revenue can be determined.
+
+```{r iterate_threshold, message = FALSE, warning = FALSE}
+iterateThresholds <- function(data) {
+  x = .01
+  all_prediction <- data.frame()
+  while (x <= 1) {
+  
+  this_prediction <-
+      testProbs2 %>%
+      mutate(predOutcome = ifelse(Probs > x, 1, 0)) %>%
+      count(predOutcome, Outcome) %>%
+      summarize(True_Negative = sum(n[predOutcome==0 & Outcome==0]),
+                True_Positive = sum(n[predOutcome==1 & Outcome==1]),
+                False_Negative = sum(n[predOutcome==0 & Outcome==1]),
+                False_Positive = sum(n[predOutcome==1 & Outcome==0])) %>%
+     gather(Variable, Count) %>%
+     mutate(Revenue =
+            ifelse(Variable == "True_Negative", (Count * 0) ,
+               ifelse(Variable == "True_Positive",((-2850-5000*0.25+66000*0.25) * Count),
+               ifelse(Variable == "False_Positive", (-2850) * Count, 0))),
+            Threshold = x)
+  
+  all_prediction <- rbind(all_prediction, this_prediction)
+  x <- x + .01
+  }
+return(all_prediction)
+}
+```
+
+```{r plot_threshold_r, message = FALSE, warning = FALSE}
+whichThreshold <- iterateThresholds(testProbs2)
+
+whichThreshold_revenue <- 
+whichThreshold %>% 
+    group_by(Threshold) %>% 
+    summarize(Revenue = sum(Revenue))
+
+whichThreshold_count <- 
+whichThreshold %>% 
+    subset(Variable == "True_Positive") %>%
+    group_by(Threshold) %>% 
+    summarize(Count)
+
+whichThreshold %>%
+  ggplot(.,aes(Threshold, Revenue, colour = Variable)) +
+  geom_point() +
+  scale_colour_manual(values = palette5[c(5, 1:3)]) +    
+  labs(title = "Revenue by confusion matrix type and threshold",
+       y = "Revenue") +
+  guides(colour=guide_legend(title = "Confusion Matrix")) 
+```
+
+
+
+```{r plot_threshold_c, message = FALSE, warning = FALSE}
+whichThreshold %>%
+  ggplot(.,aes(Threshold, Count, colour = Variable)) +
+  geom_point() +
+  scale_colour_manual(values = palette5[c(5, 1:3)]) +    
+  labs(title = "Count by confusion matrix type and threshold",
+       y = "Count") +
+  guides(colour=guide_legend(title = "Confusion Matrix")) 
+```
+
+A threshold of 15% is optimal and yields the greatest revenue at \$928,500.
+After that mark, losses associated with False Negatives begin to mount.
+The revenue at 50% of threshold is \$450,400.
+
+```{r revenue_model_r, message = FALSE, warning = FALSE}
+ggplot(whichThreshold_revenue)+
+  geom_line(aes(x = Threshold, y = Revenue))+
+  geom_vline(xintercept =  pull(arrange(whichThreshold_revenue, -Revenue)[1,1]))+
+     ylim(-200000,1000000) +
+    labs(title = "Model Revenues By Threshold For Test Sample",
+         subtitle = "Vertical Line Denotes Optimal Threshold")
+```
+
+Since the credit count only occurs for True Positives, the total credit is the count of true positives. When Threshold=0.01, it becomes 157.
+
+```{r revenue_model_c, message = FALSE, warning = FALSE}
+ggplot(whichThreshold_count)+
+  geom_line(aes(x = Threshold, y = Count))+
+  geom_vline(xintercept =  pull(arrange(whichThreshold_count, -Count)[1,1]))+
+     ylim(0,200) +
+    labs(title = "Model Counts By Threshold For Test Sample",
+         subtitle = "Vertical Line Denotes Optimal Threshold")
+```
+
+
+```{r}
+testProbs2_15 <- 
+  testProbs2 %>%
+  mutate(predOutcome  = as.factor(ifelse(testProbs2$Probs > 0.15 , 1, 0)))
+
+cost_benefit_table_15 <-
+   testProbs2_15 %>%
+      count(predOutcome, Outcome) %>%
+      summarize(
+                True_Positive = sum(n[predOutcome==1 & Outcome==1]),True_Negative = sum(n[predOutcome==0 & Outcome==0]),False_Positive = sum(n[predOutcome==1 & Outcome==0]),
+                False_Negative = sum(n[predOutcome==0 & Outcome==1])
+                ) %>%
+       gather(Variable, Count) %>%
+       mutate(Revenue =
+               ifelse(Variable == "True_Negative", (Count * 0) ,
+               ifelse(Variable == "True_Positive",((-2850-5000*0.25+66000*0.25) * Count),
+               ifelse(Variable == "False_Positive", (-2850) * Count, 0)))) %>%
+    bind_cols(data.frame(Description = c(
+              "We correctly predicted enter",
+              "We correctly predicted no enter",
+              "We predicted enter and customer did not enter",
+              "We predicted no enter and customer entered")))
+
+kable(cost_benefit_table_15,
+       caption = "Cost/Benefit Table (threshold=0.15)") %>% kable_styling()
+```
+
+```{r}
+testProbs2_01 <- 
+  testProbs2 %>%
+  mutate(predOutcome  = as.factor(ifelse(testProbs2$Probs > 0.01 , 1, 0)))
+
+cost_benefit_table_01 <-
+   testProbs2_01 %>%
+      count(predOutcome, Outcome) %>%
+      summarize(
+                True_Positive = sum(n[predOutcome==1 & Outcome==1]),True_Negative = sum(n[predOutcome==0 & Outcome==0]),False_Positive = sum(n[predOutcome==1 & Outcome==0]),
+                False_Negative = sum(n[predOutcome==0 & Outcome==1])
+                ) %>%
+       gather(Variable, Count) %>%
+       mutate(Revenue =
+               ifelse(Variable == "True_Negative", (Count * 0) ,
+               ifelse(Variable == "True_Positive",((-2850-5000*0.25+66000*0.25) * Count),
+               ifelse(Variable == "False_Positive", (-2850) * Count, 0)))) %>%
+    bind_cols(data.frame(Description = c(
+              "We correctly predicted enter",
+              "We correctly predicted no enter",
+              "We predicted enter and customer did not enter",
+              "We predicted no enter and customer entered")))
+
+kable(cost_benefit_table_01,
+       caption = "Cost/Benefit Table (threshold=0.01)") %>% kable_styling()
+```
+
+d. Table of the Total_Revenue and Total_Count_of_Credits by threshold (50%, optimal)
+
+```{r}
+whichThreshold_total <- left_join(whichThreshold_revenue, whichThreshold_count, by = "Threshold") %>%
+  filter(Threshold == 0.15 | (Threshold > 0.495 & Threshold <0.51) | Threshold == 0.01)
+
+kable(whichThreshold_total, "html", caption = "Table of the Total_Revenue and Total_Count_of_Credits by threshold") %>%
+  kable_styling(bootstrap_options = c("hover", "striped"))
+```
+
+**6. Recommendation** 
+
+Both the original and improved model in this research demonstrate good predictive for the "not entered" group (specificity), but shows very low sensitivity for the "entered" group, so it has limitations in targeting. The recommendation to address this limitation are the following:
+
+First, as in the last step, we could appropriately adjust the threshold to an optimized level rather than using 0.5. This would help reduce false negatives and increase true positives, thereby improving sensitivity to some extent.
+
+Second, the models in this research show a significantly higher false negative compared to true positive. We should investigate how the false negative group learned about the home repair tax credit program outside of marketing. Additionally, since this analysis was conducted without spatial data, incorporating spatial variables to account for spatial correlation could improve the model.
+
+Finally, this model currently assumes cost and benefit for false negatives are both zero, following the given instructions, which results in zero revenue for both true negatives and false negatives. However, since false negatives represent homeowners who received the credit, we could assign a cost of -$5,000 and a benefit of ($10,000 + $56,000) to them. Alternatively, for false positives and true negatives, we could consider a negative benefit to represent the opportunity cost of unrealized benefits.
+
+
+
+
+
+
+Jun, Youngsang\
+Student of Master of Urban Spatial Analytics (MUSA)\
+Stuart Weitzman School of Design\
+University of Pennsylvania
